@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-# pylint:disable=no-self-use
+# pylint:disable=no-self-use,protected-access
 from __future__ import annotations
 
 import struct
 import unittest
+from unittest import mock
 
 import angr
 from angr import claripy
@@ -71,6 +72,48 @@ class TestSolverEvalConcreteShortcut(unittest.TestCase):
         s = angr.SimState(project=minimal_project("AMD64"), mode="symbolic")
         assert s.solver.eval(claripy.StringV("abc")) == "abc"
         assert s.solver.eval_upto(claripy.StringV("abc"), 2) == ["abc"]
+
+
+class TestSolverInterruptPreservation(unittest.TestCase):
+    """
+    ClaripySolverInterruptError (e.g. from solver timeouts) must not be coerced
+    into SimSolverModeError, ensuring callers (such as SimulationManager and engines)
+    can properly route interrupted states instead of treating them as errored or unsat.
+    """
+
+    def test_eval_preserves_solver_interrupt(self):
+        s = angr.SimState(project=minimal_project("AMD64"), mode="symbolic")
+        m = mock.MagicMock()
+        m.eval.side_effect = claripy.ClaripySolverInterruptError("timeout")
+        s.solver._stored_solver = m
+        with self.assertRaises(claripy.ClaripySolverInterruptError):
+            s.solver.eval(claripy.BVS("x", 32))
+
+    def test_satisfiable_preserves_solver_interrupt(self):
+        s = angr.SimState(project=minimal_project("AMD64"), mode="symbolic")
+        m = mock.MagicMock()
+        m.satisfiable.side_effect = claripy.ClaripySolverInterruptError("timeout")
+        s.solver._stored_solver = m
+        with self.assertRaises(claripy.ClaripySolverInterruptError):
+            s.solver.satisfiable()
+
+    def test_step_state_routes_solver_interrupt_to_interrupted(self):
+        p = minimal_project("AMD64")
+        s = p.factory.entry_state()
+        m = mock.MagicMock()
+        m.eval.side_effect = claripy.ClaripySolverInterruptError("timeout")
+        s.solver._stored_solver = m
+
+        simgr = p.factory.simgr(s)
+        error_list = []
+
+        def successor_calling_eval(state):
+            state.solver.eval(claripy.BVS("target", 64))
+
+        stashes = simgr.step_state(s, successor_func=successor_calling_eval, error_list=error_list)
+        self.assertIn("interrupted", stashes)
+        self.assertEqual(stashes["interrupted"], [s])
+        self.assertEqual(len(error_list), 0)
 
 
 if __name__ == "__main__":

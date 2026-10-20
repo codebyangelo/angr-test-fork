@@ -97,6 +97,8 @@ def error_converter(f):
     def wrapped_f(*args, **kwargs):
         try:
             return f(*args, **kwargs)
+        except claripy.ClaripySolverInterruptError:
+            raise
         except claripy.UnsatError as e:
             raise SimUnsatError("Got an unsat result") from e
         except claripy.ClaripyError as e:
